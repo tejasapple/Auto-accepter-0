@@ -1,4 +1,4 @@
-# pip install motor python-telegram-bot
+# pip install motor python-telegram-bot python-dotenv
 import os
 import asyncio
 import csv
@@ -28,6 +28,15 @@ from telegram.ext import (
 )
 
 # ==========================================
+# 🔐 ENVIRONMENT VARIABLES SETUP
+# ==========================================
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# ==========================================
 # 🛠️ LOGGING CONFIGURATION
 # ==========================================
 logging.basicConfig(
@@ -37,11 +46,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==========================================
-# ⚙️ CONFIGURATION (अपनी डिटेल्स यहाँ डालें)
+# ⚙️ CONFIGURATION (.env Supported)
 # ==========================================
-BOT_TOKEN = "8972078260:AAENtp-9JaIo5ykLuEs9B1er8l6T7WvuEQo" 
-MONGO_DB_URI = "mongodb+srv://Tejas7xx:mrxtejas7@cluster0.akhlgjf.mongodb.net/?appName=Cluster0" 
-ADMIN_ID = 8884734704  
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8963867350:AAE8ze1jqS30Vzc7PMoySpc5uq-5EIBz7V4")
+MONGO_DB_URI = os.getenv("MONGO_DB_URI", "mongodb+srv://Tejas7xx:mrxtejas7@cluster0.akhlgjf.mongodb.net/?appName=Cluster0")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7121137252"))
 
 # ==========================================
 # 🗄️ DATABASE SETUP (MongoDB)
@@ -121,9 +130,12 @@ def get_color_btn(text: str, callback_data: Optional[str] = None, url: Optional[
 # ==========================================
 # 🚀 START COMMAND & HELP
 # ==========================================
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /start command."""
     message = update.message
+    if not message:
+        return
+        
     user = message.from_user
     bot = context.bot
     
@@ -137,98 +149,132 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [get_color_btn("📢 Add to your Channel", url=f"https://t.me/{bot.username}?startchannel=true&admin={admin_rights}", style="primary")]
     ])
     
+    # Updated Description 
     text = (
         f"<blockquote>👋 <b>WELCOME TO AUTO ACCEPT BOT</b></blockquote>\n\n"
         f"Hello <b>{user.first_name}</b>!\n\n"
-        f"I am an advanced and lightning-fast Auto-Accept Bot. Add me to your Channel or Group as an Admin to automatically accept join requests securely.\n\n"
+        f"I am an advanced and lightning-fast Auto-Accept Bot. Add me to your Channel or Group as an Admin to automatically accept join requests instantly and I also delete join/left events to keep your group chat clean.\n\n"
         f"<i>⚠️ Note: Please make sure 'Remain Anonymous' permission is turned OFF.</i>"
     )
     
     await message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the /help command."""
+    if not update.message:
+        return
+        
     user = update.message.from_user
     await save_user(user)
     
+    # Updated Help Description
     text = (
         f"<blockquote>🛡️ <b>BOT HELP CENTER</b></blockquote>\n\n"
         f"<b>How to use me?</b>\n"
         f"1. Add me to your Group or Channel.\n"
-        f"2. Promote me as an Admin with 'Invite Users' rights.\n"
+        f"2. Promote me as an Admin with 'Invite Users' and 'Delete Messages' rights.\n"
         f"3. Turn on 'Approve New Members' in your group/channel settings.\n\n"
-        f"Whenever someone requests to join, I will send them a DM to verify and automatically approve them!"
+        f"Whenever someone requests to join, I will automatically accept them instantly, delete the join/left events, and send them a welcome DM!"
     )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 # ==========================================
-# 🛡️ AUTO ACCEPT & VERIFICATION DM 
+# 🛡️ INSTANT AUTO ACCEPT & VERIFICATION DM 
 # ==========================================
-async def auto_accept_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles new chat join requests and saves user BEFORE verification."""
+async def auto_accept_requests(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles new chat join requests: Accepts instantly, then sends DM in background."""
     request = update.chat_join_request
+    if not request:
+        return
+        
     chat = request.chat
     user = request.from_user
     
-    # 🚨 CRITICAL FIX: Save user and chat to database IMMEDIATELY.
-    # This ensures they receive broadcasts even if they ignore the DM.
-    await save_user(user)
-    await save_chat(chat)
-    
-    text = (
-        f"<blockquote>⚠️ <b>Security Verification Required</b></blockquote>\n\n"
-        f"Hello <b>{user.first_name}</b>,\n\n"
-        f"This is to prevent our group from bans and spam bots. "
-        f"Please confirm your identity by clicking the button below to be accepted into <b>{chat.title}</b>."
-    )
-    
-    keyboard = InlineKeyboardMarkup([
-        [get_color_btn("I am not a robot (Verify)", callback_data=f"verify_{chat.id}", style="success")]
-    ])
-    
-    max_retries = 2
-    for attempt in range(max_retries + 1):
-        try:
-            await context.bot.send_message(
-                chat_id=user.id, 
-                text=text, 
-                reply_markup=keyboard, 
-                parse_mode=ParseMode.HTML
-            )
-            logger.info(f"Verification DM sent to {user.id}")
-            break
-            
-        except telegram.error.RetryAfter as e:
-            logger.warning(f"Flood limit! Sleeping for {e.retry_after}s before DM to {user.id}")
-            await asyncio.sleep(e.retry_after)
-            if attempt == max_retries:
-                logger.error(f"Could not send DM to {user.id} due to flood limit exhaustion.")
+    # 1. ACCEPT THE JOIN REQUEST AUTOMATICALLY (INSTANTLY) - FIRST PRIORITY
+    try:
+        await context.bot.approve_chat_join_request(chat_id=chat.id, user_id=user.id)
+        logger.info(f"Instantly approved {user.id} in {chat.id}")
+    except Exception as e:
+        logger.error(f"Error approving {user.id} in {chat.id}: {e}")
+
+    # 2. BACKGROUND TASK: SAVE DB & SEND DM (Zero Delay to Acceptance)
+    async def background_operations() -> None:
+        # Save user and chat to database concurrently
+        await asyncio.gather(
+            save_user(user),
+            save_chat(chat)
+        )
+        
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🤖 Verify I am not a robot", callback_data="fake_verify")]
+        ])
+        
+        text = (
+            f"<blockquote>🛡️ <b>SECURITY VERIFICATION</b></blockquote>\n\n"
+            f"Hello <b>{user.first_name}</b>,\n\n"
+            f"To complete your joining process for <b>{chat.title}</b>, please verify that you are human by clicking the button below."
+        )
+        
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                await context.bot.send_message(
+                    chat_id=user.id, 
+                    text=text, 
+                    reply_markup=keyboard,
+                    parse_mode=ParseMode.HTML
+                )
+                logger.info(f"Verification DM sent to {user.id}")
+                break
                 
-        except (telegram.error.TimedOut, telegram.error.NetworkError) as e:
-            if attempt < max_retries:
-                await asyncio.sleep(2)
-            else:
-                logger.error(f"Network error DMing {user.id}: {e}")
+            except telegram.error.RetryAfter as e:
+                logger.warning(f"Flood limit! Sleeping for {e.retry_after}s before DM to {user.id}")
+                await asyncio.sleep(e.retry_after)
+                    
+            except (telegram.error.TimedOut, telegram.error.NetworkError) as e:
+                if attempt < max_retries:
+                    await asyncio.sleep(2)
+                else:
+                    logger.error(f"Network error DMing {user.id}: {e}")
+                    
+            except telegram.error.Forbidden:
+                logger.info(f"User {user.id} blocked the bot. They are saved in DB, but DM failed.")
+                break 
                 
-        except telegram.error.Forbidden:
-            logger.info(f"User {user.id} blocked the bot. They are saved in DB, but DM failed.")
-            break 
-            
-        except telegram.error.BadRequest as e:
-            logger.error(f"Bad Request for {user.id}: {e}")
-            break
-            
-        except Exception as e:
-            if attempt < max_retries:
-                await asyncio.sleep(2)
-            else:
-                logger.error(f"Failed to DM {user.id}: {e}")
+            except telegram.error.BadRequest as e:
+                logger.error(f"Bad Request for {user.id}: {e}")
+                break
+                
+            except Exception as e:
+                if attempt < max_retries:
+                    await asyncio.sleep(2)
+                else:
+                    logger.error(f"Failed to DM {user.id}: {e}")
+
+    # Fire and forget the background operations task to ensure instant API response
+    asyncio.create_task(background_operations())
+
+# ==========================================
+# 🧹 CLEAN JOIN/LEFT EVENTS
+# ==========================================
+async def clean_service_messages(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Deletes 'user joined' and 'user left' service messages instantly."""
+    try:
+        if update.message:
+            await update.message.delete()
+    except telegram.error.BadRequest as e:
+        logger.warning(f"Could not delete service message: {e}")
+    except Exception as e:
+        logger.error(f"Error deleting service message: {e}")
 
 # ==========================================
 # ⚙️ ADVANCED ADMIN PANEL DASHBOARD
 # ==========================================
-async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Shows the Admin Dashboard."""
+    if not update.effective_user or not update.message:
+        return
+        
     user = update.effective_user
     if user.id != ADMIN_ID:
         return
@@ -248,9 +294,12 @@ async def admin_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 # 📊 EXPORT DATA TO CSV (ADMIN ONLY)
 # ==========================================
-async def export_users_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def export_users_csv(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Exports all users from MongoDB to a CSV file."""
-    if update.effective_user.id != ADMIN_ID:
+    if not update.effective_user or update.effective_user.id != ADMIN_ID:
+        return
+        
+    if not update.message:
         return
         
     processing_msg = await update.message.reply_text("🔄 Fetching users data... Please wait.")
@@ -288,47 +337,32 @@ async def export_users_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 # 🎛️ CALLBACK QUERY ROUTER (ALL BUTTONS)
 # ==========================================
-async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Routes all inline button clicks to their appropriate functions."""
     query = update.callback_query
+    if not query:
+        return
+        
     data = query.data
     user = query.from_user
     uid = user.id
     
     try:
         await query.answer()
-    except:
+    except Exception:
         pass
 
-    # 1. Verification Callback
-    if data.startswith("verify_"):
-        chat_id = int(data.split("_")[1])
-        await save_user(user) # Update last active
-        
+    # 1. FAKE VERIFICATION BUTTON HANDLER
+    if data == "fake_verify":
         try:
-            await query.answer("✅ Identity Confirmed! Thanks for verification.", show_alert=True)
-        except:
-            pass
-            
-        try:
-            await context.bot.approve_chat_join_request(chat_id=chat_id, user_id=uid)
-            
-            try:
-                chat = await context.bot.get_chat(chat_id)
-                chat_title = chat.title
-                await save_chat(chat)
-            except Exception:
-                chat_title = "the group"
-
-            welcome_text = (
-                f"<blockquote>🎉 <b>ACCESS GRANTED</b></blockquote>\n\n"
-                f"Welcome to <b>{chat_title}</b>, <b>{user.first_name}</b>!\n\n"
-                f"Your request has been successfully approved by our Auto-Verification System. You can now access the content."
+            await query.answer("✅ Verification Successful! You can now access the group.", show_alert=True)
+            await query.message.edit_text(
+                f"<blockquote>✅ <b>VERIFICATION SUCCESSFUL</b></blockquote>\n\n"
+                f"Thank you <b>{user.first_name}</b>, you have been successfully verified and added to the group!",
+                parse_mode=ParseMode.HTML
             )
-            await query.message.edit_text(welcome_text, parse_mode=ParseMode.HTML)
-            logger.info(f"Approved join request for {uid} in {chat_id}")
-        except Exception as e:
-            logger.error(f"Error approving {uid} in {chat_id}: {e}")
+        except Exception:
+            pass
         return
 
     # 2. Admin Live Stats
@@ -348,7 +382,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<i>💡 Tip: Send /export_users to get full database in CSV.</i>"
         )
         keyboard = InlineKeyboardMarkup([[get_color_btn("⬅️ Back to Admin Panel", callback_data="back_to_admin", style="default")]])
-        await query.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        if query.message:
+            await query.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         return
 
     # 3. Back to Admin Panel
@@ -362,7 +397,8 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<blockquote>⚙️ <b>ADVANCED ADMIN PANEL</b></blockquote>\n\n"
             f"Welcome to the Enterprise Admin Dashboard. Manage your bot's statistics and broadcast systems directly from here."
         )
-        await query.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        if query.message:
+            await query.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         return
 
     # 4. Initiate Broadcast Flow
@@ -387,14 +423,17 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<b>Step 1:</b> Send <b>Media (Photo/Video/Audio/Doc)</b> for the broadcast.\n\n"
             f"<i>(Type /skip if you only want to send a text message)</i>"
         )
-        await query.message.edit_text(text, parse_mode=ParseMode.HTML)
+        if query.message:
+            await query.message.edit_text(text, parse_mode=ParseMode.HTML)
         return
 
     # 5. Broadcast Color Button Selection
-    if data.startswith("setcol_") and uid == ADMIN_ID:
+    if data and data.startswith("setcol_") and uid == ADMIN_ID:
         if uid not in bcast_state or bcast_state[uid]["step"] != "btn_color":
-            try: await query.answer("Session expired or invalid step.", show_alert=True)
-            except: pass
+            try: 
+                await query.answer("Session expired or invalid step.", show_alert=True)
+            except Exception: 
+                pass
             return
             
         color_choice = data.split("_")[1]
@@ -407,8 +446,11 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
         })
         state["current_button_index"] += 1
         
-        try: await query.message.delete()
-        except: pass
+        if query.message:
+            try: 
+                await query.message.delete()
+            except Exception: 
+                pass
         
         if state["current_button_index"] < state["target_button_count"]:
             state["step"] = "btn_name"
@@ -430,8 +472,11 @@ async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 # 📢 BROADCAST WIZARD PROCESSORS
 # ==========================================
-async def cancel_bcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel_bcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Cancels the ongoing broadcast setup."""
+    if not update.effective_user or not update.message:
+        return
+        
     uid = update.effective_user.id
     if uid == ADMIN_ID:
         if uid in bcast_state:
@@ -440,8 +485,11 @@ async def cancel_bcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("You don't have any active broadcast setup running.")
 
-async def process_broadcast_steps(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def process_broadcast_steps(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles the sequential steps of broadcast setup (Media -> Text -> Buttons)."""
+    if not update.effective_user or not update.message:
+        return
+        
     uid = update.effective_user.id
     if uid != ADMIN_ID or uid not in bcast_state:
         return
@@ -542,8 +590,11 @@ async def process_broadcast_steps(update: Update, context: ContextTypes.DEFAULT_
         ])
         await message.reply_text("🎨 <b>Select Button Color:</b>\n\nChoose a color for this button from the menu below:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
-async def confirm_bcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def confirm_bcast(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Confirm and launch the broadcast."""
+    if not update.effective_user or not update.message:
+        return
+        
     uid = update.effective_user.id
     if uid == ADMIN_ID:
         if uid not in bcast_state or bcast_state[uid]["step"] != "confirm":
@@ -557,10 +608,8 @@ async def confirm_bcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(execute_broadcast(context, uid, state))
         del bcast_state[uid]
 
-async def execute_broadcast(context: ContextTypes.DEFAULT_TYPE, admin_id: int, state: dict):
-    """
-    Executes the broadcast loop seamlessly with Async Cursors for High Scalability.
-    """
+async def execute_broadcast(context: ContextTypes.DEFAULT_TYPE, admin_id: int, state: dict) -> None:
+    """Executes the broadcast loop seamlessly with Async Cursors for High Scalability."""
     btype = state["type"]
     success, failed = 0, 0
     
@@ -627,7 +676,7 @@ async def execute_broadcast(context: ContextTypes.DEFAULT_TYPE, admin_id: int, s
                 else:
                     await context.bot.send_message(chat_id=tid, text=msg_text, reply_markup=kb, parse_mode=ParseMode.HTML)
                 success += 1
-            except:
+            except Exception:
                 failed += 1
                 
         except Exception as e:
@@ -648,7 +697,7 @@ async def execute_broadcast(context: ContextTypes.DEFAULT_TYPE, admin_id: int, s
 # ==========================================
 # ⚙️ BOT INITIALIZATION & COMMAND SETUP
 # ==========================================
-async def post_init(application: Application):
+async def post_init(application: Application) -> None:
     """Sets up the bot commands menu automatically."""
     commands = [
         BotCommand("start", "Start the bot"),
@@ -661,7 +710,7 @@ async def post_init(application: Application):
 # ==========================================
 # 🏃 RUN THE BOT
 # ==========================================
-def main():
+def main() -> None:
     logger.info("Bot is Starting... ✅")
     
     # Application Builder
@@ -677,12 +726,15 @@ def main():
     app.add_handler(CommandHandler("confirm", confirm_bcast, filters=filters.ChatType.PRIVATE))
     app.add_handler(CommandHandler("export_users", export_users_csv, filters=filters.ChatType.PRIVATE))
     
-    # NEW FIX: Explicitly handled /skip command for Broadcast Wizard
+    # Explicitly handled /skip command for Broadcast Wizard
     app.add_handler(CommandHandler("skip", process_broadcast_steps, filters=filters.ChatType.PRIVATE))
     
     # Core Handlers
     app.add_handler(CallbackQueryHandler(callback_router))
     app.add_handler(ChatJoinRequestHandler(auto_accept_requests))
+    
+    # New Handler: Clean User Join/Left events automatically
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS | filters.StatusUpdate.LEFT_CHAT_MEMBER, clean_service_messages))
     
     # Broadcast Wizard Step Handler (Handles Text, Photo, Video, Doc, Audio, Animation, Voice)
     app.add_handler(MessageHandler(
